@@ -1,0 +1,246 @@
+#!/bin/bash
+
+echo "Linux - Active Directory Connection Script for Ubuntu 14.04 v1.0"
+
+sleep 2
+
+#check if the user is running as root
+#root is required to perform kerberos authentication and domain joining
+if [ $LOGNAME != "root" ] ; then
+	echo "This script must be run as root user to be successful";
+	echo "try 'sudo adtool' instead";
+	exit;
+fi
+
+read -p "Configure IP addressing? y/n: " configIP
+
+#read in the user defined IP address and DNS settings
+function acquire {
+	echo "Beggining IPv4 Configuration"
+
+	read -p "IP Address: " address
+	read -p "Subnet Mask: " netmask
+	read -p "Default Gateway: " gateway
+	read -p "DNS Server Address: " nameserver
+	read -p "Search Domain (domain name): " search
+}
+
+#method to write the IP settings to a file in the /tmp directory
+#then move/overwrite the original interfaces file in /etc/network
+function writeIP {
+	file=/tmp/interfaces
+
+	touch $file
+	echo '# This file describes the network interfaces available on your system' >> $file
+	echo '# and how to activate them.  For more information, see interfaces(5).' >> $file
+	echo '' >> $file
+	echo '# The loopback network interface' >> $file
+	echo 'auto lo' >> $file
+	echo 'iface lo inet loopback' >> $file
+	echo '# The primary network interface' >> $file
+	echo 'auto eth0' >> $file
+	echo 'iface eth0 inet static' >> $file
+	echo "	address $address" >> $file
+	echo "	netmask $netmask" >> $file
+	echo "	gateway $gateway" >> $file
+	echo "	dns-nameserver $nameserver" >> $file
+	echo "	dns-search $search" >> $file
+
+	echo "Interfaces file written"
+	sleep 1
+
+	echo "Restarting network-manager service..."
+	sleep 1	
+	service network-manager restart
+	echo "done"
+	sleep 1
+}
+
+#Confirmation method, to confirm with user if IP settings are correct
+function confirm {
+	read -p "Is this configuration correct? y/n: " retry
+
+	if [ $retry == "y" ] ; then
+		echo "Writing Temporary Interfaces File";
+		writeIP;
+	elif [ $retry == "n" ] ; then
+		clear;
+		acquire;
+	else
+		echo "Unknown paramter '$retry' - must be y/n";
+		confirm
+	fi
+}
+
+#Read the user input for IP configuration settings
+#then confirm if the settings are correct
+if [ $configIP == "y" ] ; then
+	acquire
+	confirm
+elif [ $configIP == "n" ] ; then
+	echo "Assuming IP configuration complete";
+fi
+
+
+clear
+
+#read in user defined proxy configuration information
+function readproxy {
+	read -p "Proxy server address: " proxyaddr
+	read -p "Proxy port: " proxyport
+}
+
+#write the proxy configuration information to a tmp file
+#then move it to /etc/apt/apt.conf
+#this is to avoid appending proxy configs to an already configured apt.conf file
+function writeproxy {
+	echo "Acquire::http::proxy \"http://$proxyaddr:$proxyport/\";" >> /tmp/proxy.conf
+	echo "Acquire::https::proxy \"https://$proxyaddr:$proxyport/\";" >> /tmp/proxy.conf
+	mv /tmp/proxy.conf /etc/apt/apt.conf
+}
+
+#confirm with the user if these proxy configs are correct
+function confirmproxy {
+	read -p "Is this configuration correct? y/n: " retry
+
+		if [ $retry == "y" ] ; then
+			echo "Writing Proxy Information in '/etc/apt/apt.conf'";
+			writeproxy;
+			sleep 1
+			echo "Written proxy information"
+			sleep 1
+			echo "restarting network-manager service..."
+			service network-manager restart
+		elif [ $retry == "n" ] ; then
+			clear;
+			readproxy;
+		else
+			echo "Unknown paramter '$retry' - must be y/n";
+			confirmproxy
+		fi
+}
+
+read -p "Write a config file for proxy? y/n: " proxy
+
+if [ $proxy == "y" ] ; then
+	readproxy;
+	confirmproxy;
+fi
+
+clear
+
+#********UPDATE THE APT-REPOSITORY*******
+echo "updating apt repository"
+sleep 2
+
+#update apt
+apt-get update -y
+
+sleep 2
+
+clear
+
+
+#*******INSTALL THE NECESSARY PACKAGES FOR JOINGING DOMAIN*******
+echo "Installing necessary packages for Joining this machine to Windows Domain"
+echo "Installing: 'realmd', 'sssd', 'samba-common', 'samba-common-bin', 'samba-libs', 'sssd-tools', 'krb5-user', 'adcli', 'packagekit' & 'vim'"
+
+sleep 1
+
+apt-get install realmd sssd samba-common samba-common-bin samba-libs sssd-tools krb5-user adcli packagekit vim -y
+sleep 1
+
+echo "Packages installed"
+sleep 1
+
+clear
+
+#*******ACQUIRE KERBEROS TICKET********
+echo "Acquiring Kerberos Ticket from Realm, using Administrator account"
+sleep 1
+kinit -V Administrator
+
+clear
+sleep 1
+echo "Attempting to present ticket to user..."
+
+sleep 1
+klist
+
+sleep 1
+
+function kinitsuccess {
+	if [ $ktick == "y" ] ; then
+		echo "Kerberos Ticket successfully acquired...continuing..."
+	elif [ $kitck == "n" ] ; then
+		echo "An error has occured.  Can this computer contact the Domain Controller?"
+		echo "Stopping..."
+		exit
+	else
+		echo "Unknown paramter '$retry' - must be y/n";
+		kinitsuccess
+	fi
+}	
+
+read -p "Has a ticket successfully been acquired? y/n: " ktick
+kinitsuccess
+
+#join the domain
+sleep 1
+
+clear
+echo "Attempting to join the domain with domain Administrator account..."
+sleep 1
+
+read -p "Domain Administrator account name (case sensitive): " domainadmin
+read -p "Domain name (all lowercase): " domainname
+
+realm --verbose join -U $domainadmin $domainname
+
+sleep 1
+joinedDomain=$(realm -n list)
+
+if [ $joinedDomain != $domainname ] ; then
+	echo "An error has occured, Domain Join Failed, or realm list cannot reatrieve the domain name.";
+	read -p "Has this computer joined the domain? y/n: " joined
+	if [ $joined = "y" ] ; then
+		echo "Ignoring error";
+	elif [ $joined == "n" ] ; then
+		echo "An error has occured and the domain has not been joined";
+		echo "stopping...";
+	else
+		echo "Unknown parameter, assuming domain join failure"
+		echo "stopping..."
+	fi
+else
+	echo "Domain has been successfully joined"
+	sleep 2
+fi
+
+sleep 2
+clear
+echo "Modifying sssd file to configure $(hostname) DNS entry"
+
+sleep 1
+echo "ad_hostname = $(hostname).$(realm -n list)" >> /etc/sssd/sssd.conf
+echo "dyndns_update = true" >> /etc/sssd/sssd.conf
+
+sleep 1
+echo "Configured sssd for $(hostname) entry"
+echo "restarting sssd..."
+service sssd restart
+
+sleep 1
+clear
+
+echo "Modifying /etc/pam.d/common-session to auto-create domain user home folders at login..."
+
+echo 'session_required pam_mkhomedir.so skel=/etc/skel umask=0022' >> /etc/pam.d/common-session
+
+sleep 1
+clear
+echo "Configuration complete"
+echo "Domain users are now able to login to this machine"
+echo "Finishing..."
+
+exit
