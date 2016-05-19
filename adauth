@@ -51,7 +51,7 @@ function writeIP {
 
 	echo "Restarting network-manager service..."
 	sleep 1	
-	service network-manager restart
+	reboot
 	echo "done"
 	sleep 1
 }
